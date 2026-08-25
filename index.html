@@ -616,14 +616,24 @@ setInterval(async ()=>{
   }catch(e){}
 }, 7000);
 
-// ---------- GEOCODING (OpenStreetMap Nominatim — no key needed, fast) ----------
+// ---------- GEOCODING (Photon/Komoot — works reliably for public GitHub Pages sites) ----------
 async function geocode(query, limit=1){
-  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=${limit}&countrycodes=za&addressdetails=1&accept-language=en&q=${encodeURIComponent(query)}`;
+  const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=${limit}&lang=en&location_bias_scale=1`;
   try{
     const res = await fetch(url);
     if(!res.ok) throw new Error('geocode http '+res.status);
     const data = await res.json();
-    return data.map(d=>({ lat: parseFloat(d.lat), lng: parseFloat(d.lon), address: d.display_name }));
+    const features = Array.isArray(data && data.features) ? data.features : [];
+    return features
+      .filter(f => f && f.geometry && Array.isArray(f.geometry.coordinates))
+      .map(f => {
+        const props = f.properties || {};
+        return {
+          lat: parseFloat(f.geometry.coordinates[1]),
+          lng: parseFloat(f.geometry.coordinates[0]),
+          address: props.name || props.city || props.street || props.state || props.country || 'Location found'
+        };
+      });
   }catch(e){
     console.error('Geocoding error', e);
     return [];
@@ -631,11 +641,17 @@ async function geocode(query, limit=1){
 }
 async function reverseGeocode(lat,lng){
   try{
-    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&accept-language=en`;
+    const url = `https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}&lang=en`;
     const res = await fetch(url);
     if(!res.ok) throw new Error('reverse http '+res.status);
     const data = await res.json();
-    return data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    const feature = data && Array.isArray(data.features) ? data.features[0] : null;
+    if(!feature) return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    const props = feature.properties || {};
+    const line = [props.name, props.street, props.city, props.state, props.country]
+      .filter(Boolean)
+      .join(', ');
+    return line || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
   }catch(e){
     return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
   }
