@@ -579,21 +579,37 @@ function renderAll(){
 }
 
 // ---------- STORAGE ----------
-async function loadReports(){
+// This page used to call window.storage, which is NOT a browser API — it only existed in
+// the sandbox the file was first authored in. On GitHub Pages it is undefined, so every
+// save threw, the catch swallowed the error, and reports disappeared on refresh.
+// localStorage is the real browser equivalent and persists per browser, per device.
+function readStored(){
   try{
-    const res = await window.storage.get(STORAGE_KEY, true);
-    reports = res && res.value ? JSON.parse(res.value) : [];
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
   }catch(e){
-    reports = [];
+    console.error('Could not read saved reports', e);
+    return [];
   }
+}
+
+async function loadReports(){
+  reports = readStored();
   renderAll();
 }
 
 async function saveReports(){
   try{
-    await window.storage.set(STORAGE_KEY, JSON.stringify(reports), true);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(reports));
+    return true;
   }catch(e){
     console.error('Storage error', e);
+    // Photos are held inline as base64, so a few dozen can exhaust the ~5MB quota.
+    // Say so rather than losing the report silently, which is the bug we just fixed.
+    if(e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED')){
+      alert('Storage is full, so this report could not be saved.\n\nDelete an older report — especially one with a photo — and try again.');
+    }
+    return false;
   }
 }
 
@@ -604,17 +620,17 @@ async function deleteReport(id){
   await saveReports();
 }
 
-// poll for live updates from other users
-setInterval(async ()=>{
-  try{
-    const res = await window.storage.get(STORAGE_KEY, true);
-    const fresh = res && res.value ? JSON.parse(res.value) : [];
-    if(JSON.stringify(fresh) !== JSON.stringify(reports)){
-      reports = fresh;
-      renderAll();
-    }
-  }catch(e){}
-}, 7000);
+// Keep other tabs on this same browser in sync. Note this is NOT sync between users:
+// localStorage is private to one browser on one device, so each visitor sees only their
+// own reports. Sharing reports between people needs a hosted backend.
+window.addEventListener('storage', e=>{
+  if(e.key !== STORAGE_KEY) return;
+  const fresh = readStored();
+  if(JSON.stringify(fresh) !== JSON.stringify(reports)){
+    reports = fresh;
+    renderAll();
+  }
+});
 
 // ---------- GEOCODING (OpenStreetMap Nominatim — no key needed, fast) ----------
 async function geocode(query, limit=1){
