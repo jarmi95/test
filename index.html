@@ -180,8 +180,6 @@
   .suggest-item:hover{background:var(--gold-100);}
   .suggest-item.empty{color:#8a93a8;cursor:default;}
   .suggest-item.empty:hover{background:#fff;}
-  .suggest-item .st{display:block;font-weight:600;}
-  .suggest-item .sub{display:block;font-size:11.5px;color:#7a839a;margin-top:1px;}
   .searchbox{
     background:var(--navy-900);border-radius:10px;
     display:flex;align-items:center;padding:0 6px 0 14px;gap:8px;
@@ -376,7 +374,7 @@
         <div class="searchbox-wrap">
           <div class="searchbox">
             <span style="opacity:.6">📍</span>
-            <input id="searchInput" type="text" placeholder="Search a street or suburb in South Africa..." autocomplete="off" />
+            <input id="searchInput" type="text" placeholder="Search an address..." autocomplete="off" />
           </div>
           <div class="suggest-list" id="searchSuggest"></div>
         </div>
@@ -408,7 +406,7 @@
       <label>Location</label>
       <div class="loc-row" style="position:relative;">
         <div style="flex:1;position:relative;">
-          <input type="text" id="addrInput" placeholder="e.g. 12 Long Street, Cape Town" autocomplete="off" style="width:100%;" />
+          <input type="text" id="addrInput" placeholder="Type an address or street..." autocomplete="off" style="width:100%;" />
           <div class="suggest-list" id="addrSuggest"></div>
         </div>
         <button class="btn btn-outline" id="useLocBtn">📍 Use GPS</button>
@@ -618,75 +616,14 @@ setInterval(async ()=>{
   }catch(e){}
 }, 7000);
 
-// ---------- GEOCODING (Photon/Komoot — works reliably for public GitHub Pages sites) ----------
-// Everything below is locked to South Africa and biased towards street/house results,
-// so typing "long st" gives real SA streets instead of whatever the world-wide index ranks first.
-const ZA_BBOX = '16.30,-35.00,33.10,-22.00';   // minLon,minLat,maxLon,maxLat — covers all of SA
-// No lat/lon bias on purpose: the centroid of SA sits in Kimberley, and biasing there buried
-// Cape Town/Joburg streets. The bbox alone keeps us in-country and lets Photon rank by importance.
-// Photon layers we care about, best-first. house/street are what an address search actually wants.
-const LAYER_RANK = { house:0, street:1, locality:2, district:3, city:4, county:5, state:6 };
-// OSM admin noise we never want shown: "Johannesburg Ward 124", "Frances Baard District Municipality".
-const ADMIN_NOISE = /ward\s*\d+|(local|district|metropolitan)\s+municipality/i;
-
-function inSouthAfrica(props){
-  if(props.countrycode) return props.countrycode === 'ZA';
-  return !props.country || /south africa/i.test(props.country);
-}
-
-// "12 Long Street, Gardens, Cape Town, Western Cape"
-function formatAddress(props){
-  const head = (props.housenumber && props.street)
-    ? `${props.housenumber} ${props.street}`
-    : (props.name || props.street || props.city || props.state || 'Location found');
-  const tail = [props.street, props.locality, props.district, props.city, props.state]
-    .filter(Boolean)
-    .filter(part => !ADMIN_NOISE.test(part))
-    .filter(part => part !== head && !head.includes(part));
-  const seen = new Set([head]);
-  const parts = [head];
-  tail.forEach(part => { if(!seen.has(part)){ seen.add(part); parts.push(part); } });
-  return parts.join(', ');
-}
-
+// ---------- GEOCODING (OpenStreetMap Nominatim — no key needed, fast) ----------
 async function geocode(query, limit=1){
-  const params = new URLSearchParams({
-    q: query,
-    limit: String(Math.max(limit * 4, 12)), // over-fetch so filtering/dedupe still leaves enough
-    lang: 'en',
-    bbox: ZA_BBOX
-  });
-  // Restrict the index to address-ish layers — drops shops, POIs and far-off countries.
-  Object.keys(LAYER_RANK).forEach(layer => params.append('layer', layer));
-
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=${limit}&countrycodes=za&addressdetails=1&accept-language=en&q=${encodeURIComponent(query)}`;
   try{
-    const res = await fetch(`https://photon.komoot.io/api/?${params.toString()}`);
+    const res = await fetch(url);
     if(!res.ok) throw new Error('geocode http '+res.status);
     const data = await res.json();
-    const features = Array.isArray(data && data.features) ? data.features : [];
-
-    const seen = new Set();
-    return features
-      .filter(f => f && f.geometry && Array.isArray(f.geometry.coordinates))
-      .filter(f => inSouthAfrica(f.properties || {}))
-      .map((f, i) => {
-        const props = f.properties || {};
-        return {
-          lat: parseFloat(f.geometry.coordinates[1]),
-          lng: parseFloat(f.geometry.coordinates[0]),
-          address: formatAddress(props),
-          _rank: LAYER_RANK[props.type] !== undefined ? LAYER_RANK[props.type] : 7,
-          _order: i // keep Photon's own relevance order as the tie-breaker
-        };
-      })
-      .filter(r => { // Photon returns each street segment separately — collapse the duplicates
-        const key = r.address.toLowerCase();
-        if(seen.has(key)) return false;
-        seen.add(key); return true;
-      })
-      .sort((a,b) => a._rank - b._rank || a._order - b._order)
-      .slice(0, limit)
-      .map(r => ({ lat:r.lat, lng:r.lng, address:r.address }));
+    return data.map(d=>({ lat: parseFloat(d.lat), lng: parseFloat(d.lon), address: d.display_name }));
   }catch(e){
     console.error('Geocoding error', e);
     return [];
@@ -694,14 +631,11 @@ async function geocode(query, limit=1){
 }
 async function reverseGeocode(lat,lng){
   try{
-    const url = `https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}&lang=en`;
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&accept-language=en`;
     const res = await fetch(url);
     if(!res.ok) throw new Error('reverse http '+res.status);
     const data = await res.json();
-    const feature = data && Array.isArray(data.features) ? data.features[0] : null;
-    if(!feature) return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-    const props = feature.properties || {};
-    return formatAddress(props) || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    return data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
   }catch(e){
     return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
   }
@@ -716,31 +650,20 @@ function wireAutocomplete(inputEl, listEl, onPick){
   let requestId = 0;
   const runSearch = debounce(async ()=>{
     const q = inputEl.value.trim();
-    if(q.length < 2){ listEl.classList.remove('show'); listEl.innerHTML=''; return; }
+    if(q.length < 3){ listEl.classList.remove('show'); listEl.innerHTML=''; return; }
     const myId = ++requestId;
-    listEl.innerHTML = '<div class="suggest-item empty">Searching South Africa…</div>';
+    listEl.innerHTML = '<div class="suggest-item empty">Searching…</div>';
     listEl.classList.add('show');
-    const results = await geocode(q, 6);
+    const results = await geocode(q, 5);
     if(myId !== requestId) return; // a newer keystroke superseded this search
     listEl.innerHTML = '';
     if(results.length===0){
-      listEl.innerHTML = '<div class="suggest-item empty">No South African street matches — try adding the suburb or city</div>';
+      listEl.innerHTML = '<div class="suggest-item empty">No matches — try a more specific address</div>';
     }else{
       results.forEach(r=>{
         const item = document.createElement('div');
         item.className = 'suggest-item';
-        // Street on its own line, suburb/city/province underneath it.
-        const comma = r.address.indexOf(', ');
-        const street = document.createElement('span');
-        street.className = 'st';
-        street.textContent = comma === -1 ? r.address : r.address.slice(0, comma);
-        item.appendChild(street);
-        if(comma !== -1){
-          const sub = document.createElement('span');
-          sub.className = 'sub';
-          sub.textContent = r.address.slice(comma + 2);
-          item.appendChild(sub);
-        }
+        item.textContent = r.address;
         item.addEventListener('click', ()=>{
           inputEl.value = r.address;
           listEl.classList.remove('show'); listEl.innerHTML='';
