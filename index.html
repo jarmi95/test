@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4/dist/umd/supabase.min.js"></script>
 <style>
   :root{
     --navy-900:#052840;   /* deep shade of the Scully blue, for headers/sidebar */
@@ -445,13 +445,13 @@ const CATEGORIES = {
 const STORAGE_KEY = "scully-road-reports";
 
 // ---------- SUPABASE CONFIG ----------
-// PASTE YOUR TWO VALUES HERE. Project Settings -> API in the Supabase dashboard.
-// Use the "anon"/"public" key. NEVER paste the service_role key: this file is served
-// as readable text by GitHub Pages, and service_role would let any visitor take over
-// the database. The anon key is designed to be public; row level security protects it.
-// Until both are filled in, the app keeps using localStorage, exactly as it does now.
-const SUPABASE_URL = "";       // e.g. "https://abcdefghijkl.supabase.co"
-const SUPABASE_ANON_KEY = "";  // e.g. "eyJhbGciOi..."
+// This is the publishable (public) key, which is meant to be readable by anyone and is
+// safe to commit. Row level security on the reports table is what actually protects the
+// data. NEVER put the service_role / sb_secret_ key here: GitHub Pages serves this file
+// as plain text, and that key would let any visitor take over the database.
+// If both values are ever blanked out, the app falls back to localStorage.
+const SUPABASE_URL = "https://eqzreilznuhgfsiwfiur.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_ciyV_o2C7O4B8xSuIgprWg_1uxnZADB";
 const SA_CENTER = [-30.5595, 22.9375];
 
 let reports = [];
