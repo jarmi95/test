@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <style>
   :root{
     --navy-900:#052840;   /* deep shade of the Scully blue, for headers/sidebar */
@@ -442,6 +443,15 @@ const CATEGORIES = {
   closure:  { label:"Road closure", emoji:"🚧", color:"#1fb6a6" },
 };
 const STORAGE_KEY = "scully-road-reports";
+
+// ---------- SUPABASE CONFIG ----------
+// PASTE YOUR TWO VALUES HERE. Project Settings -> API in the Supabase dashboard.
+// Use the "anon"/"public" key. NEVER paste the service_role key: this file is served
+// as readable text by GitHub Pages, and service_role would let any visitor take over
+// the database. The anon key is designed to be public; row level security protects it.
+// Until both are filled in, the app keeps using localStorage, exactly as it does now.
+const SUPABASE_URL = "";       // e.g. "https://abcdefghijkl.supabase.co"
+const SUPABASE_ANON_KEY = "";  // e.g. "eyJhbGciOi..."
 const SA_CENTER = [-30.5595, 22.9375];
 
 let reports = [];
@@ -579,58 +589,127 @@ function renderAll(){
 }
 
 // ---------- STORAGE ----------
-// This page used to call window.storage, which is NOT a browser API — it only existed in
-// the sandbox the file was first authored in. On GitHub Pages it is undefined, so every
-// save threw, the catch swallowed the error, and reports disappeared on refresh.
-// localStorage is the real browser equivalent and persists per browser, per device.
-function readStored(){
+// Reports live in Supabase so every visitor sees the same map. localStorage is kept as a
+// read-through cache, so a returning visitor still sees the last known reports offline.
+//
+// Note this page previously called window.storage, which is NOT a browser API. It existed
+// only in the sandbox this file was authored in, so on GitHub Pages every save threw and
+// the catch swallowed it, which is why reports used to vanish on refresh.
+const REPORT_COLS = 'id,category,lat,lng,address,note,photo,ts';
+const db = (SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase)
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+if(!db) console.warn('Supabase not configured — falling back to localStorage on this browser only. Fill in SUPABASE_URL and SUPABASE_ANON_KEY to share reports between visitors.');
+
+function readCache(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
     return raw ? JSON.parse(raw) : [];
   }catch(e){
-    console.error('Could not read saved reports', e);
+    console.error('Could not read cached reports', e);
     return [];
   }
 }
 
+function writeCache(list){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+  }catch(e){
+    // Photos are inline base64, so the ~5MB quota can fill up. The cache is only a
+    // convenience when Supabase is in use, so a failure here is not worth interrupting for.
+    console.warn('Could not cache reports locally', e);
+    if(!db && e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED')){
+      alert('Storage is full, so this report could not be saved.\n\nDelete an older report — especially one with a photo — and try again.');
+    }
+  }
+}
+
 async function loadReports(){
-  reports = readStored();
+  if(!db){
+    reports = readCache();
+    renderAll();
+    return;
+  }
+  reports = readCache();   // paint something immediately, then replace with the server copy
+  renderAll();
+  const { data, error } = await db.from('reports').select(REPORT_COLS).order('ts', { ascending: true });
+  if(error){
+    console.error('Could not load reports from Supabase', error);
+    return;                // keep showing the cached copy rather than blanking the map
+  }
+  reports = data || [];
+  writeCache(reports);
   renderAll();
 }
 
-async function saveReports(){
-  try{
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(reports));
+// One row per report. The old code rewrote the whole array on every save, which would
+// clobber other people's reports now that the table is shared.
+async function addReport(report){
+  if(!db){
+    reports.push(report);
+    writeCache(reports);
+    renderAll();
     return true;
-  }catch(e){
-    console.error('Storage error', e);
-    // Photos are held inline as base64, so a few dozen can exhaust the ~5MB quota.
-    // Say so rather than losing the report silently, which is the bug we just fixed.
-    if(e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED')){
-      alert('Storage is full, so this report could not be saved.\n\nDelete an older report — especially one with a photo — and try again.');
-    }
+  }
+  const { error } = await db.from('reports').insert(report);
+  if(error){
+    console.error('Could not save report to Supabase', error);
+    alert('Could not save your report — check your connection and try again.');
     return false;
   }
+  if(!reports.some(r => r.id === report.id)) reports.push(report);  // realtime may have beaten us
+  writeCache(reports);
+  renderAll();
+  return true;
 }
 
 async function deleteReport(id){
+  const previous = reports;
   reports = reports.filter(r=>r.id!==id);
   map.closePopup();
   renderAll();
-  await saveReports();
+  if(!db){
+    writeCache(reports);
+    return;
+  }
+  const { error } = await db.from('reports').delete().eq('id', id);
+  if(error){
+    console.error('Could not delete report from Supabase', error);
+    alert('Could not delete that report — check your connection and try again.');
+    reports = previous;    // put it back rather than lying about what happened
+    renderAll();
+    return;
+  }
+  writeCache(reports);
 }
 
-// Keep other tabs on this same browser in sync. Note this is NOT sync between users:
-// localStorage is private to one browser on one device, so each visitor sees only their
-// own reports. Sharing reports between people needs a hosted backend.
-window.addEventListener('storage', e=>{
-  if(e.key !== STORAGE_KEY) return;
-  const fresh = readStored();
-  if(JSON.stringify(fresh) !== JSON.stringify(reports)){
-    reports = fresh;
-    renderAll();
-  }
-});
+// Live updates between visitors — a report filed on someone else's phone appears here
+// without a refresh. This is what the old 7-second poll was reaching for.
+if(db){
+  db.channel('reports-feed')
+    .on('postgres_changes', { event:'INSERT', schema:'public', table:'reports' }, payload=>{
+      if(reports.some(r => r.id === payload.new.id)) return;
+      reports.push(payload.new);
+      writeCache(reports);
+      renderAll();
+    })
+    .on('postgres_changes', { event:'DELETE', schema:'public', table:'reports' }, payload=>{
+      reports = reports.filter(r => r.id !== payload.old.id);
+      writeCache(reports);
+      renderAll();
+    })
+    .subscribe();
+}else{
+  // No backend: at least keep other tabs in this browser consistent.
+  window.addEventListener('storage', e=>{
+    if(e.key !== STORAGE_KEY) return;
+    const fresh = readCache();
+    if(JSON.stringify(fresh) !== JSON.stringify(reports)){
+      reports = fresh;
+      renderAll();
+    }
+  });
+}
 
 // ---------- GEOCODING (OpenStreetMap Nominatim — no key needed, fast) ----------
 async function geocode(query, limit=1){
@@ -876,11 +955,16 @@ document.getElementById('submitBtn').addEventListener('click', async ()=>{
     photo: pendingPhoto,
     ts: Date.now()
   };
-  reports.push(report);
-  renderAll();
+  // Saving now goes over the network, so guard against a double click creating two
+  // reports, and only close the modal once the save actually succeeded.
+  const submitBtn = document.getElementById('submitBtn');
+  const submitLabel = submitBtn.innerText;
+  submitBtn.disabled = true; submitBtn.innerText = 'Saving...';
+  const saved = await addReport(report);
+  submitBtn.disabled = false; submitBtn.innerText = submitLabel;
+  if(!saved) return;   // leave the modal open so the user does not lose what they typed
   map.setView([report.lat, report.lng], 13);
   closeModal();
-  await saveReports();
 });
 
 // ---------- MOBILE SIDEBAR DRAWER ----------
